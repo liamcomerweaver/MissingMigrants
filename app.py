@@ -1015,5 +1015,6 @@ del app.config._read_only["requests_pathname_prefix"]
 
 
 # E. run app in server
-app.run_server(port = 8046, debug=False)
+if __name__ == '__main__':
+    app.run_server(debug=False, port=8053)
 
