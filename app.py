@@ -34,7 +34,6 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 
 # To create dashboard
 import dash
-from jupyter_dash import JupyterDash
 from dash import Dash, callback, dash_table, dcc, html, Input, Output, State, ALL, ctx
 import dash_bootstrap_components as dbc
 #import json
