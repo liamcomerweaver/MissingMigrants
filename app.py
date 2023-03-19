@@ -85,9 +85,9 @@ col_options_Route = [dict(label=x, value=x) for x in MM["Migration_Route"].uniqu
 col_options_Route = sorted(col_options_Route, key=itemgetter('label'), reverse=False)
 col_options_Route.insert(0, {'label': 'All', 'value': 'All'})
 
-col_options_COO = [dict(label=x, value=x) for x in MM["Country of Origin"].unique()]
-col_options_COO = sorted(col_options_COO, key=itemgetter('label'), reverse = False)
-col_options_COO.insert(0, {'label': 'All', 'value': 'All'})
+#col_options_COO = [dict(label=x, value=x) for x in MM["Country of Origin"].unique()]
+#col_options_COO = sorted(col_options_COO, key=itemgetter('label'), reverse = False)
+#col_options_COO.insert(0, {'label': 'All', 'value': 'All'})
 
 
 # In[7]:
