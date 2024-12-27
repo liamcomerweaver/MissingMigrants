@@ -142,14 +142,14 @@ app.layout = dbc.Container([
                     xs = 4, sm = 4, md = 4, lg = 4, xl = 4
                    ), 
 
-            dbc.Col([html.H4("Region"), 
+            dbc.Col([html.H4("Region of Incident"), 
                                          
             dcc.Dropdown(id = "Region", value = "All",  
                     options = col_options_Region)],
                     xs = 4, sm = 4, md = 4, lg = 4, xl = 4
                    ),
                                 
-            dbc.Col([html.H4("Route"), 
+            dbc.Col([html.H4("Migration Route"), 
 
             dcc.Dropdown(id = "Migration_Route", value = "All",  
                     options = col_options_Route)],
@@ -170,7 +170,7 @@ app.layout = dbc.Container([
                     xs = 6, sm = 6, md = 6, lg = 6, xl = 6
                     ), 
 
-            dbc.Col([html.H4("Country"), 
+            dbc.Col([html.H4("Country of Incident"), 
 
             dcc.Dropdown(id = "Country", value = "All",  
                     options = col_options_Country)],
