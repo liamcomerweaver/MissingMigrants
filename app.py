@@ -340,7 +340,7 @@ app.layout = dbc.Container([
     dbc.Row([dbc.Col(html.Br())]), 
     dbc.Row([dbc.Col(html.Br())]), 
    
-    dbc.Row([dbc.Col(html.H2("Data Trends (Custom Forecasting - Coming January 2023)",
+    dbc.Row([dbc.Col(html.H2("Data Seasonality",
                              className = 'text-primary, mb-4',
                              style ={'color': '#0099C6', "text-align": "center",
                                      "font-weight": "bold"}),
