@@ -501,7 +501,7 @@ def callback(Reported_Year,Country, Region, COD, Migration_Route):
             height=1000,
             width=1750,
             color="Migration_Route",
-            color_discrete_sequence=['black', 'brown', 'darkturquoise', 'firebrick', 'darkgrey', 'darkgreen', 'maroon', 'red', 'navy', 'forestgreen', 'darkolivegreen', 'midnightblue', 'darkkhaki', 'chocolate', 'mediumvioletred', 'burlywood', 'dimgray', 'darkorchid', 'darksalmon', 'moccasin', ' saddlebrown', 'darkgoldenrod', 'darkslategrey', 'orangered']).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
+            color_discrete_sequence=['black', 'brown', 'mediumvioletred', 'firebrick', 'darkslateblue', 'darkgreen', 'maroon', 'red', 'navy', 'plum', 'forestgreen', 'darkolivegreen', 'midnightblue', 'darkkhaki', 'chocolate', 'mediumvioletred', 'darkviolet', 'dimgray', 'darkorchid', 'darksalmon', 'moccasin', ' saddlebrown', 'darkgoldenrod', 'darkslategrey', 'orangered']).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
                                                                               "paper_bgcolor": "rgba(0, 0, 0, 0)"},
                                                                             legend=dict(yanchor="bottom", y=0.01,
                                                                                                    xanchor="left", x=0.01,
