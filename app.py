@@ -496,16 +496,16 @@ def callback(Reported_Year,Country, Region, COD, Migration_Route):
             hover_data = {"Total_Dead_and_Missing":False,"Latitude":False,"Longitude":False,"Migration_Route":False,"Number_Dead":True,"Minimum_Missing":True, "Reported_Year":True}, 
             custom_data = ["URL1"],
             mapbox_style ="open-street-map",
-            zoom=2,
+            zoom=3,
             opacity = .5,
             height=1000,
-            width=1650,
+            width=1750,
             color="Migration_Route",
             color_discrete_sequence=px.colors.qualitative.Prism).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
                                                                               "paper_bgcolor": "rgba(0, 0, 0, 0)"},
-                                                                            legend=dict(yanchor="top", y=0.01,
+                                                                            legend=dict(yanchor="bottom", y=0.01,
                                                                                                    xanchor="left", x=0.01,
-                                                                                                  title = "Migration Route"))
+                                                                                                  title = "Reported Migration Route"))
     except:
         return px.pie().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
 
