@@ -498,12 +498,12 @@ def callback(Reported_Year,Country, Region, COD, Migration_Route):
             mapbox_style ="open-street-map",
             zoom=2,
             opacity = .5,
-            height=800,
-            width=1200,
+            height=700,
+            width=1500,
             color="Migration_Route",
             color_discrete_sequence=px.colors.sequential.Inferno).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
                                                                               "paper_bgcolor": "rgba(0, 0, 0, 0)"},
-                                                                            legend=dict(yanchor="bottom", y=0.01,
+                                                                            legend=dict(yanchor="top", y=0.01,
                                                                                                    xanchor="left", x=0.01,
                                                                                                   title = "Migration Route"))
     except:
