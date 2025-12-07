@@ -55,7 +55,7 @@ import gunicorn
 
 # A. Load the data 
 # Preprocessed CSV from MM_Cleaner must be in the same directory as this notebook file
-MM = pd.read_csv("MM_Cleaned_27.csv")
+MM = pd.read_csv("MM_Dummies26.csv")
 
 
 # In[6]:
