@@ -1,8 +1,23 @@
-dash==2.7.1
-dash_bootstrap_components==1.1.0
-gunicorn==20.1.0
-matplotlib==3.5.1
-numpy==1.21.5
-pandas
-plotly==5.6.0
-statsmodels==0.13.2
+# Missing Migrants Dashboard - Requirements
+# Updated December 2025
+
+# Core Dash framework
+dash>=2.14.0
+dash-bootstrap-components>=1.5.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Visualization
+plotly>=5.18.0
+
+# Time series analysis
+statsmodels>=0.14.0
+
+# Production server
+gunicorn>=21.0.0
+
+# Note: matplotlib removed (unused in app)
+# Note: For local geocoding in the data cleaner, also install:
+#   pip install reverse_geocoder
