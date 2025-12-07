@@ -82,7 +82,7 @@ def load_data(filepath: str) -> pd.DataFrame:
     return df
 
 # Load data
-MM = load_data("MM_Dummies26.csv")
+MM = load_data("MM_Cleaned_27.csv")
 
 # =============================================================================
 # HELPER FUNCTIONS
