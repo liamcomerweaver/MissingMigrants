@@ -19,7 +19,7 @@ print("=" * 80)
 # ============================================================================
 print("\n[1/13] Importing dataset from IOM...")
 MM = pd.read_csv(
-    'https://missingmigrants.iom.int/sites/g/files/tmzbdl601/files/report-migrant-incident/Missing_Migrants_Global_Figures_allData.csv?420491',
+    'Missing_Migrants_Global_Figures_allData.csv',
     index_col=False,
     encoding='unicode_escape'
 )
