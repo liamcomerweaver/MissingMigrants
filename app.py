@@ -1,1020 +1,651 @@
-#!/usr/bin/env python
-# coding: utf-8
+# =============================================================================
+# MISSING MIGRANTS PROJECT - IMPROVED DASHBOARD
+# =============================================================================
+# Changes made:
+# 1. Removed map legend for more space
+# 2. Added more map detail (relief, terrain colors)
+# 3. Fixed "No Article Available" issue (was causing reload)
+# 4. Changed text to "View Source" / "Click on a point to see the associated source"
+# 5. Made points smaller
+# 6. BONUS: Integrated dropdowns as floating controls over the map
+# =============================================================================
 
-# # Missing Migrants Project
-
-# ## Importing libraries and adjusting other settings
-
-# In[1]:
-
-
-#If you haven't done it, please install:
-#!pip install plotly
-#!pip install numpy 
-#!pip install pandas
-#!pip install numpy
-#!pip install dash
-#!pip install statsmodels
-#!pip install dash-bootstrap-components
-#!pip install gunicorn
-
-
-# In[2]:
-
-
-# To manipulate the dataframe
+import logging
+from functools import lru_cache
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from statsmodels.tsa.seasonal import seasonal_decompose
+import plotly.graph_objects as go
 
 
-# In[3]:
-
-
-# To create dashboard
 import dash
-from dash import Dash, callback, dash_table, dcc, html, Input, Output, State, ALL, ctx
-import dash_bootstrap_components as dbc
-#import json
-
-
-# In[4]:
-
-
-# To Deploy to Server
-import collections
+from dash import Dash, dcc, html, Input, Output, State, ctx
 from dash.exceptions import PreventUpdate
-import gunicorn 
+import dash_bootstrap_components as dbc
+import gunicorn
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+COD_COLUMNS = [
+    'Other Accidents', 'Drowning', 'Lack of Shelter, Food, or Water',
+    'Mixed or unknown', 'Sickness', 'Transportation Accident', 'Violence'
+]
+COD_DISPLAY_NAMES = {col: col for col in COD_COLUMNS}
+
+CHART_LAYOUT = {"plot_bgcolor": "rgba(0, 0, 0, 0)", "paper_bgcolor": "rgba(0, 0, 0, 0)"}
+COLOR_SCHEME = px.colors.sequential.RdBu
+HIGHLIGHT_COLOR = '#CC7A29'
+
+# Custom muted color palette for migration routes
+ROUTE_COLORS = [
+    '#2E5A87',  # Steel blue
+    '#8B4513',  # Saddle brown
+    '#2F6B4F',  # Forest green
+    '#8B3A62',  # Muted magenta
+    '#CC7A29',  # Burnt orange
+    '#5B4B8A',  # Muted purple
+    '#1A7F7F',  # Teal
+    '#994D4D',  # Brick red
+    '#6B8E23',  # Olive
+    '#4A6670',  # Slate
+    '#9E6B4A',  # Copper
+    '#3D6B99',  # Denim blue
+    '#7A5D47',  # Umber
+    '#5C8A6B',  # Sage
+    '#87455A',  # Dusty rose
+    '#B8860B',  # Dark goldenrod
+    '#4F7178',  # Cadet blue
+    '#8B6B4F',  # Taupe
+    '#6A5D7B',  # Dusty violet
+    '#5F8575',  # Cambridge blue
+]
+
+# =============================================================================
+# DATA LOADING
+# =============================================================================
+def load_data(filepath: str) -> pd.DataFrame:
+    logger.info(f"Loading data from {filepath}")
+    df = pd.read_csv(filepath, parse_dates=['Reported_Date'])
+    
+    for col in ['Region', 'Country', 'Migration_Route']:
+        if col in df.columns:
+            df[col] = df[col].astype('category')
+    
+    numeric_cols = ['Total_Dead_and_Missing', 'Number_Dead', 'Minimum_Missing',
+                    'Females', 'Males', 'Children', 'Unknown_Sex', 'Unknown_Age_Status']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    logger.info(f"Loaded {len(df):,} records ({df.memory_usage(deep=True).sum() / 1e6:.1f} MB)")
+    return df
 
 
-# # Creating a dashboard with Dash
-
-# In[5]:
-
-
-# A. Load the data 
-# Preprocessed CSV from MM_Cleaner must be in the same directory as this notebook file
-MM = pd.read_csv("MM_Dummies26.csv")
-
-
-# In[6]:
-
-
-# B. Determining the different menus 
-from operator import itemgetter
-col_options_Region = [dict(label=x, value=x) for x in MM["Region"].unique()]
-col_options_Region = sorted(col_options_Region, key=itemgetter('label'), reverse=False)
-col_options_Region.insert(0,{'label': 'All', 'value': 'All'})
-
-
-col_options_Year = [dict(label=x, value=x) for x in MM["Reported_Year"].unique()]
-col_options_Year.insert(0,{'label': 'All', 'value': 'All'})
-
-
-col_options_COD = [dict(label=x, value=x) for x in MM.columns[23:30]]
-col_options_COD = sorted(col_options_COD, key=itemgetter('label'), reverse=False)
-col_options_COD.insert(0, {'label': 'All', 'value': 'All'})
-
-
-col_options_Country = [dict(label=x, value=x) for x in MM["Country"].unique()]
-col_options_Country = sorted(col_options_Country, key=itemgetter('label'), reverse=False)
-col_options_Country.insert(0, {'label': 'All', 'value': 'All'})
-
-col_options_Route = [dict(label=x, value=x) for x in MM["Migration_Route"].unique()]
-col_options_Route = sorted(col_options_Route, key=itemgetter('label'), reverse=False)
-col_options_Route.insert(0, {'label': 'All', 'value': 'All'})
-
-#col_options_COO = [dict(label=x, value=x) for x in MM["Country of Origin"].unique()]
-#col_options_COO = sorted(col_options_COO, key=itemgetter('label'), reverse = False)
-#col_options_COO.insert(0, {'label': 'All', 'value': 'All'})
+class DataCache:
+    def __init__(self, df: pd.DataFrame):
+        self.df = df
+        self._precompute_seasonality()
+    
+    def _precompute_seasonality(self):
+        try:
+            df_dated = self.df.dropna(subset=['Reported_Date']).set_index('Reported_Date')
+            monthly = df_dated.resample('ME')['Total_Dead_and_Missing'].sum()
+            if len(monthly) >= 24:
+                monthly.index.freq = 'ME'
+                result = seasonal_decompose(monthly, model='add', period=12)
+                self.seasonality = result.seasonal
+            else:
+                self.seasonality = None
+        except Exception as e:
+            logger.warning(f"Could not compute seasonality: {e}")
+            self.seasonality = None
+    
+    def get_filtered_indices(self, year, region, country, cod, route) -> pd.Index:
+        mask = pd.Series(True, index=self.df.index)
+        if year != "All":
+            mask &= (self.df["Reported_Year"] == year)
+        if region != "All":
+            mask &= (self.df["Region"] == region)
+        if country != "All":
+            mask &= (self.df["Country"] == country)
+        if route != "All":
+            mask &= (self.df["Migration_Route"] == route)
+        if cod != "All" and cod in self.df.columns:
+            mask &= (self.df[cod] == 1)
+        return self.df.index[mask]
 
 
-# In[7]:
+def build_dropdown_options(series, sort=True, add_all=True):
+    unique_vals = series.dropna().unique().tolist()
+    if sort:
+        unique_vals = sorted(unique_vals)
+    options = [{'label': str(x), 'value': x} for x in unique_vals]
+    if add_all:
+        options.insert(0, {'label': 'All', 'value': 'All'})
+    return options
 
 
-# C. Building app Layout 
-app = Dash(__name__, external_stylesheets = [dbc.themes.FLATLY],
-                  meta_tags = [{'name' : 'viewport',
-                               'content' : 'width-device-width, initial-scale=1.0'}
-                              ]
-           )
+def empty_figure(fig_type='bar'):
+    creators = {
+        'bar': px.bar, 'pie': px.pie, 'scatter_geo': px.scatter_geo,
+        'treemap': px.treemap, 'line': px.line
+    }
+    return creators.get(fig_type, px.bar)().update_layout(**CHART_LAYOUT)
+
+
+# =============================================================================
+# LOAD DATA
+# =============================================================================
+MM = load_data("MM_Dummies_CleanRefactored_Jan16.csv")
+cache = DataCache(MM)
+
+options_year = build_dropdown_options(MM["Reported_Year"], sort=False)
+options_region = build_dropdown_options(MM["Region"])
+options_country = build_dropdown_options(MM["Country"])
+options_route = build_dropdown_options(MM["Migration_Route"])
+options_cod = [{'label': 'All', 'value': 'All'}] + [
+    {'label': col, 'value': col} for col in COD_COLUMNS if col in MM.columns
+]
+
+# =============================================================================
+# APP INITIALIZATION
+# =============================================================================
+app = Dash(
+    __name__,
+    external_stylesheets=[dbc.themes.SPACELAB],
+    meta_tags=[{'name': 'viewport', 'content': 'width=device-width, initial-scale=1.0'}],
+    suppress_callback_exceptions=True
+)
 server = app.server
 
+# =============================================================================
+# REUSABLE COMPONENTS
+# =============================================================================
+def make_section_header(title, subtitle=None):
+    components = [html.H3(title, className="text-center mb-2")]
+    if subtitle:
+        components.append(html.P(subtitle, className="text-center text-muted small"))
+    return html.Div(components, className="mb-3")
+
+
+def make_chart_card(graph_id, title, subtitle=None, full_width=False):
+    return dbc.Col([
+        make_section_header(title, subtitle),
+        dcc.Loading(
+            type="circle",
+            children=[dcc.Graph(id=graph_id, figure={}, config={'responsive': True}, style={'height': '450px'})]
+        )
+    ], xs=12, lg=12 if full_width else 6, className="mb-4")
+
+
+# =============================================================================
+# LAYOUT - Style A: Floating Filters Over Map
+# =============================================================================
 app.layout = dbc.Container([
+    dcc.Store(id='store-filter-indices', data=[]),
     
-#For storing data   
-
-    dcc.Store(id='store-data', data=[]),#, storage_type='memory'),
+    # Header
+    html.Div(className="py-3"),
+    dbc.Row([
+        dbc.Col([
+            html.H1("The World's Missing Migrants", className="text-center fw-bold", style={'color': HIGHLIGHT_COLOR}),
+            html.P([
+                "Data Source: International Organization for Migration's Missing Migrants Project: ",
+                html.A("missingmigrants.iom.int", href="https://missingmigrants.iom.int/", target="_blank")
+            ], className="text-center text-muted")
+        ], width=12)
+    ]),
     
-#Title and source            
-    dbc.Row([dbc.Col(html.Br())]),
-    dbc.Row([dbc.Col(html.Br())]),
-    
-    dbc.Row(
-            [dbc.Col(html.H1("Visualizing Missing Migrants",
-                            className = 'text-primary, mb-4',
-                            style ={'color': '#0099C6', "text-align": "center",
-                                    "font-weight": "bold"}),
-                    xs = 12, sm = 12, md = 12, lg = 12, xl = 12
-                   ),
-        ],
-        justify = 'center',
-    ),
-
-    dbc.Row(
-        [
-            dbc.Col(html.H6("Data Source: International Organization for Migration's Missing Migrants Project: https://missingmigrants.iom.int/", 
-                            style ={"text-align": "center"}),
-                   xs = 12, sm = 12, md = 12, lg = 12, xl = 12
-                   ),
-        ],
-        justify = 'center',
-    ),
-    
-    dbc.Row([dbc.Col(html.Br())]),
-    
-#Dropdown menus    
-    dbc.Row(children = [dbc.Col([html.H4("Year"), 
-                                
-            dcc.Dropdown(id = "Reported_Year", value = "All", 
-                    options = col_options_Year)],
-                    xs = 4, sm = 4, md = 4, lg = 4, xl = 4
-                   ), 
-
-            dbc.Col([html.H4("Region of Incident"), 
-                                         
-            dcc.Dropdown(id = "Region", value = "All",  
-                    options = col_options_Region)],
-                    xs = 4, sm = 4, md = 4, lg = 4, xl = 4
-                   ),
-                                
-            dbc.Col([html.H4("Migration Route"), 
-
-            dcc.Dropdown(id = "Migration_Route", value = "All",  
-                    options = col_options_Route)],
-                    xs = 4, sm = 4, md = 4, lg = 4, xl = 4
-                   ),
-          ],
-                                
-    justify = 'around',                             
-                    
-    ),
-    
-    dbc.Row([dbc.Col(html.Br())]),
-    
-    dbc.Row(children = [dbc.Col([html.H4("Cause of Death"), 
-
-            dcc.Dropdown(id = "COD", value = "All", 
-                    options = col_options_COD)],
-                    xs = 6, sm = 6, md = 6, lg = 6, xl = 6
-                    ), 
-
-            dbc.Col([html.H4("Country of Incident"), 
-
-            dcc.Dropdown(id = "Country", value = "All",  
-                    options = col_options_Country)],
-                    xs = 6, sm = 6, md = 6, lg = 6, xl = 6
-                   ),
-                        ],
-            justify = 'around',
-          ),
-    
-    dbc.Row([dbc.Col(html.Br())]),
-    dbc.Row([dbc.Col(html.Br())]),
-
-    dbc.Row([dbc.Col(dcc.Markdown(id= "text1",
-                                  style ={"text-align": "center",
-                                          "color": '#0099C6',
-                                          "backgroundColor": "#dcdcdc", 
-                                          "font-weight": "bold"}),
-                                          xs = 11, sm = 11, md = 11, lg = 11, xl = 11),
-            ], 
-            justify = 'center',
-            ),
-    
-    dbc.Row([dbc.Col(html.Br())]),
-    dbc.Row([dbc.Col(html.Br())]),
-
-#Map and button   
-    dbc.Row([dbc.Col(html.H3("Dead and Missing Migrants by Incident",
-                         style ={"text-align": "center"}),
-                         xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-            ], 
-            justify = 'center',
-            ),
-                       
-    dbc.Row(children = [dbc.Col(html.Div(
-                        dcc.Graph(id = "fig1", figure = {})),
-                        width = {"size": 'auto', "offset": 0},), 
-                       ],
-            justify = 'around'
-
-            ),
-
-    dbc.Row([dbc.Col(dbc.Button(html.Pre(id = "web_link", children = []),
-                                style ={"text-align": "center"},
-                        color='info',
-                        size = 'lg'), 
-                        width = {"size": 9, "offset": 3},
-                        xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-            ], 
-            justify = 'center',
-            ),
-    
-
-    dbc.Row([dbc.Col(html.Div("The boundaries and names shown and the designations used on maps do not imply endorsement or acceptance.",
-                            style ={"text-align": "center", "color": '#808080'}),
-                            xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-            ], 
-           justify = 'center',
-            ),
-                                                
-    dbc.Row([dbc.Col(html.Br())]), 
-    dbc.Row([dbc.Col(html.Br())]), 
-                        
-#Bar charts with year and month
-    dbc.Row(children = [dbc.Col([html.H3("Dead and Missing Migrants by Year"),
-                                 html.Div(dcc.Graph(id = "fig2", figure = {}))
-                                ], 
-                                xs = 12, sm = 12, md =12, lg = 12, xl = 6
-                               ),
-
-                        dbc.Col([html.H3("Dead and Missing Migrants by Month"),
-                                 html.Div(dcc.Graph(id = "fig3", figure = {})),
-                                ],
-                                xs = 12, sm = 12, md = 12, lg = 12, xl = 6
-                               )
-                       ],
-            justify = 'around'
-           ),
-                                            
-   dbc.Row([dbc.Col(html.Br())]), 
-   dbc.Row([dbc.Col(html.Br())]), 
-    
-#Graphs with Cause of Death and region                        
-   dbc.Row(children = [dbc.Col([html.H3("Incident Count by Cause of Death"),
-                              html.Div(dcc.Graph(id = "fig4", figure = {})),
-
-                              html.Div("A single incident can present more than one cause of death.",
-                              style ={"text-align": "center", "color": '#808080'}),
-                               ],
-
-                               xs = 12, sm = 12, md = 12, lg = 12, xl = 6),
-               
-                       dbc.Col([html.H3("Dead and Missing Migrants by Region"),
-                               html.Div(dcc.Graph(id = "fig5", figure = {})),
-                               ],
-
-                              xs = 12, sm = 12, md = 12, lg = 12, xl = 6), 
-                       ],
-                       justify = 'around'
-                       ),
-    
-   dbc.Row([dbc.Col(html.Br())]), 
-   dbc.Row([dbc.Col(html.Br())]), 
-    
-    
-#Treemap with countries
-   dbc.Row([dbc.Col(html.H3("Dead and Missing Migrants by Country of Death",
-                           style ={"text-align": "center"}),
-                         xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-           ], 
-            justify = 'center',
-           ),
-
-    
-    dbc.Row(children = [dbc.Col(html.Div(
-                        dcc.Graph(id = "fig6", figure = {})),
-                        width = {"size": 'auto', "offset": 0},
-                               ),
-                       ],
-            justify = 'around'
-           ), 
-    
-    dbc.Row([dbc.Col(html.Div("The category Not Found corresponds to incidents that occurred at sea or in territories that could not be identified with a country.",
-                       style ={"text-align": "center", "color": '#808080'}), 
-                     xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-            ], 
-            justify = 'center',
-           ),
-    
-    dbc.Row([dbc.Col(html.Br())]), 
-    dbc.Row([dbc.Col(html.Br())]), 
-
-#Treemap with countries of origin
-    dbc.Row([dbc.Col(html.H3("Dead and Missing Migrants by Country of Origin",
-                           style ={"text-align": "center"}),
-                         xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-           ], 
-            justify = 'center',
-           ),
-
-
-    dbc.Row([dbc.Col(html.Div("The category Not Found corresponds to incidents that occurred at sea or in territories that could not be identified with a country.",
-                       style ={"text-align": "center", "color": '#808080'}), 
-                     xs = 12, sm = 12, md = 12, lg = 12, xl = 12),
-            ], 
-            justify = 'center',
-           ),
-    
-    dbc.Row([dbc.Col(html.Br())]), 
-    
-#Pie chart with sex and age  
-                                    
-   dbc.Row(children = [dbc.Col([html.H3("Dead and Missing Migrants by Sex"),
-                              html.Div(dcc.Graph(id = "fig7", figure = {})),
-                               ],
-                               xs = 12, sm = 12, md = 12, lg = 12, xl = 6
-                              ),
-                                   
-                                   
-                       dbc.Col([html.H3("Dead and Missing Migrants by age"),
-                               html.Div(dcc.Graph(id = "fig8", figure = {})),
-                               ],           
-                              xs = 12, sm = 12, md = 12, lg = 12, xl = 6), 
-                      ],
-                      justify = 'around'
-           ),
-    
-    dbc.Row([dbc.Col(html.Br())]), 
-    dbc.Row([dbc.Col(html.Br())]), 
-   
-    dbc.Row([dbc.Col(html.H2("Data Seasonality",
-                             className = 'text-primary, mb-4',
-                             style ={'color': '#0099C6', "text-align": "center",
-                                     "font-weight": "bold"}),
-                     xs = 12, sm = 12, md = 12, lg = 12, xl = 12
-                    ),
-            ],
-            justify = 'center',
-            ),
-    
-    dbc.Row([dbc.Col(html.H4("Detected Seasonality in Selected Data", 
-                                style ={"text-align": "center"}),
-                     xs = 12, sm = 12, md = 12, lg = 12, xl = 12
-                    ),
-            ],
-            justify = 'center',
-            ),
-    
-   dbc.Row([dbc.Col(html.H6("Seasonality drawn from an ETS decomposition", 
-                            style ={"text-align": "center"}),
-                   xs = 12, sm = 12, md = 12, lg = 12, xl = 12
-                   ),
-            ],
-            justify = 'center',
-            ),
-    
-    dbc.Row(children = [dbc.Col(html.Div(dcc.Graph(id = "fig9", figure = {})),
-                                width = {"size": 'auto', "offset": 0},
-                               ),
-                        ],
-                        justify = 'around'
-           ), 
-    #Download button
-    dbc.Row([html.Button("Download Selected Data", id="btn"),
-              dcc.Download(id="download_csv")], 
-              justify = 'center'),
-    
-    
-    dbc.Row([dbc.Col(html.Br())]), 
-    
-], fluid = True)
-
-
-# In[8]:
-
-
-#C.2 Storing data
-
-@app.callback(Output('store-data', 'data'),
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def store_data(Reported_Year, Region, Country, COD, Migration_Route): 
-    
-    if Reported_Year != "All":
-        MM_Year = MM.query("Reported_Year == @Reported_Year")
-    else:
-        MM_Year = MM
-
-    if Region != "All":
-        MM_Region = MM_Year.query("Region == @Region")
-    else:
-        MM_Region = MM_Year
-
-    if Country != "All":
-        MM_Country = MM_Region.query("Country == @Country")
-    else:
-        MM_Country = MM_Region
-
-    if Migration_Route != "All":
-        MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-    else:
-        MM_Route = MM_Country
-
-    if COD != "All":
-        MM_COD = MM_Route.loc[MM_Route[COD]==1]
-    else:
-        MM_COD = MM_Route
-
-    return MM_COD.to_dict('records')
-
-
-# In[9]:
-
-
-# D. Defining callbacks to update the graphs
-
-
-# In[10]:
-
-
-@app.callback(Output('text1', 'children'), Input("store-data", 'data'))
-
-def callback(data):
-    
-    try:
-        MM_summary = pd.DataFrame.from_dict(data)
-            
-        incidents = MM_summary["Incident_ID"].count()
-        dead_and_missing = MM_summary["Total_Dead_and_Missing"].sum()
-            
-        return f"""There are {incidents} incidents that correspond to the selected characteristics. In them, {dead_and_missing} migrants were reported as dead or missing."""
-    
-    except: 
+    # Map Section with Integrated Floating Filters
+    html.Div([
+        # The map itself
+        dcc.Loading(type="circle", children=[
+            dcc.Graph(
+                id="map-incidents",
+                figure={},
+                config={'responsive': True, 'displayModeBar': True, 'displaylogo': False},
+                style={'height': '75vh', 'width': '100%'}
+            )
+        ]),
         
-        return """No content"""
-
-
-# In[11]:
-
-
-# D.1 Map with all incidents
-@app.callback(Output('fig1', 'figure'), Input('Reported_Year', 'value'),
-               Input('Country', 'value'), Input('Region', 'value'),
-              Input('COD', 'value'), Input('Migration_Route', 'value'))
-
-def callback(Reported_Year,Country, Region, COD, Migration_Route):
+        # Floating filter panel (top-left overlay)
+        html.Div([
+            html.Div([
+                html.Div("FILTERS", style={
+                    'fontSize': '0.7rem',
+                    'fontWeight': '600',
+                    'letterSpacing': '0.1em',
+                    'color': '#666',
+                    'marginBottom': '0.75rem',
+                    'borderBottom': '1px solid #ddd',
+                    'paddingBottom': '0.5rem',
+                }),
+                
+                html.Div([
+                    html.Label("Year", style={'fontSize': '0.75rem', 'fontWeight': '500', 'color': '#444'}),
+                    dcc.Dropdown(
+                        id="filter-year", value="All", options=options_year,
+                        clearable=False, style={'fontSize': '0.8rem'}
+                    ),
+                ], style={'marginBottom': '0.5rem'}),
+                
+                html.Div([
+                    html.Label("Region", style={'fontSize': '0.75rem', 'fontWeight': '500', 'color': '#444'}),
+                    dcc.Dropdown(
+                        id="filter-region", value="All", options=options_region,
+                        clearable=False, style={'fontSize': '0.8rem'}
+                    ),
+                ], style={'marginBottom': '0.5rem'}),
+                
+                html.Div([
+                    html.Label("Route", style={'fontSize': '0.75rem', 'fontWeight': '500', 'color': '#444'}),
+                    dcc.Dropdown(
+                        id="filter-route", value="All", options=options_route,
+                        clearable=False, style={'fontSize': '0.8rem'}
+                    ),
+                ], style={'marginBottom': '0.5rem'}),
+                
+                html.Div([
+                    html.Label("Cause of Death", style={'fontSize': '0.75rem', 'fontWeight': '500', 'color': '#444'}),
+                    dcc.Dropdown(
+                        id="filter-cod", value="All", options=options_cod,
+                        clearable=False, style={'fontSize': '0.8rem'}
+                    ),
+                ], style={'marginBottom': '0.5rem'}),
+                
+                html.Div([
+                    html.Label("Country", style={'fontSize': '0.75rem', 'fontWeight': '500', 'color': '#444'}),
+                    dcc.Dropdown(
+                        id="filter-country", value="All", options=options_country,
+                        clearable=False, style={'fontSize': '0.8rem'}
+                    ),
+                ]),
+            ], style={
+                'padding': '1rem',
+            }),
+        ], style={
+            'position': 'absolute',
+            'top': '10px',
+            'left': '10px',
+            'width': '220px',
+            'backgroundColor': 'rgba(255, 255, 255, 0.95)',
+            'borderRadius': '8px',
+            'boxShadow': '0 2px 10px rgba(0,0,0,0.15)',
+            'zIndex': '1000',
+            'maxHeight': '90%',
+            'overflowY': 'auto',
+        }),
+        
+        # Summary stats panel (top-right overlay)
+        html.Div([
+            html.Div(id="summary-stats"),
+        ], style={
+            'position': 'absolute',
+            'top': '10px',
+            'right': '10px',
+            'backgroundColor': 'rgba(255, 255, 255, 0.95)',
+            'borderRadius': '8px',
+            'boxShadow': '0 2px 10px rgba(0,0,0,0.15)',
+            'padding': '1rem',
+            'zIndex': '1000',
+        }),
+        
+        # Source link panel (bottom-center overlay)
+        html.Div([
+            html.Div(id="incident-details"),
+        ], style={
+            'position': 'absolute',
+            'bottom': '20px',
+            'left': '50%',
+            'transform': 'translateX(-50%)',
+            'backgroundColor': 'rgba(255, 255, 255, 0.95)',
+            'borderRadius': '8px',
+            'boxShadow': '0 2px 10px rgba(0,0,0,0.15)',
+            'padding': '0.75rem 1.5rem',
+            'zIndex': '1000',
+        }),
+        
+    ], style={
+        'position': 'relative',
+        'marginBottom': '2rem',
+    }),
     
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-        return px.scatter_mapbox(
-            MM_COD,
-            lat="Latitude", 
-            lon="Longitude",
-            #ext = ['URL1'], #component being updated by plotly
-            #hover_name="Cause_of_Death", #component being updated by plotly
-            hover_data = {"Total_Dead_and_Missing":False,"Latitude":False,"Longitude":False,"Migration_Route":False,"Number_Dead":True,"Minimum_Missing":True, "Reported_Year":True}, 
-            custom_data = ["URL1"],
-            mapbox_style ="open-street-map",
-            zoom=3,
-            opacity = .5,
-            height=1000,
-            width=1750,
-            color="Migration_Route",
-            color_discrete_sequence=['black', 'brown', 'red', 'firebrick', 'darkslateblue', 'darkgreen', 'maroon', 'red', 'navy', 'thistle', 'forestgreen', 'midnightblue', 'darkolivegreen', 'midnightblue', 'crimson', 'darkkhaki', 'chocolate', 'cadetblue', 'mediumvioletred', 'black', 'darkviolet', 'dimgray', 'darkorchid', 'darksalmon', 'mediumseagreen', ' saddlebrown', 'darkgoldenrod', 'darkslategrey', 'orangered']).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                              "paper_bgcolor": "rgba(0, 0, 0, 0)"},
-                                                                            legend=dict(yanchor="bottom", y=0.01,
-                                                                                                   xanchor="left", x=0.01,
-                                                                                                  title = "Reported Migration Route"))
-    except:
-        return px.pie().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
+    # Charts below the map
+    dbc.Row([
+        make_chart_card("chart-by-year", "Dead and Missing Migrants by Year"),
+        make_chart_card("chart-by-month", "Dead and Missing Migrants by Month"),
+    ]),
+    dbc.Row([
+        make_chart_card("chart-by-cod", "Incident Count by Cause of Death",
+                       "A single incident can present more than one cause of death."),
+        make_chart_card("chart-by-region", "Dead and Missing Migrants by Region"),
+    ]),
+    dbc.Row([
+        make_chart_card("chart-by-sex", "Dead and Missing Migrants by Sex"),
+        make_chart_card("chart-by-age", "Dead and Missing Migrants by Age"),
+    ]),
+    
+    # Download
+    dbc.Row([
+        dbc.Col([
+            dbc.Button("Download Selected Data", id="btn-download", color="info", size="lg"),
+            dcc.Download(id="download-csv")
+        ], width=12, className="text-center mb-4")
+    ]),
+    
+    html.Div(className="py-4"),
+], fluid=True)
 
 
-# In[12]:
+# =============================================================================
+# CALLBACKS
+# =============================================================================
+
+@app.callback(Output('filter-country', 'options'), Input('filter-region', 'value'))
+def update_country_options(region):
+    if region == "All":
+        countries = MM['Country'].dropna().unique()
+    else:
+        countries = MM.loc[MM['Region'] == region, 'Country'].dropna().unique()
+    return [{'label': 'All', 'value': 'All'}] + [{'label': c, 'value': c} for c in sorted(countries)]
 
 
-#D.2 button that shows link for selected point in scatterplot map
 @app.callback(
-    Output('web_link', "children"),
-    [Input("fig1", 'clickData')])
+    Output('store-filter-indices', 'data'),
+    Input('filter-year', 'value'),
+    Input('filter-region', 'value'),
+    Input('filter-country', 'value'),
+    Input('filter-cod', 'value'),
+    Input('filter-route', 'value')
+)
+def filter_and_store_indices(year, region, country, cod, route):
+    indices = cache.get_filtered_indices(year, region, country, cod, route)
+    logger.info(f"Filtered to {len(indices):,} records")
+    return indices.tolist()
 
-def display_click_data(clickData):
+
+@app.callback(Output('summary-stats', 'children'), Input('store-filter-indices', 'data'))
+def update_summary(indices):
+    if not indices:
+        return html.Div("No data matches filters", style={'color': '#888', 'fontSize': '0.9rem'})
+    
+    df = MM.loc[indices]
+    incidents = len(df)
+    total = df['Total_Dead_and_Missing'].sum()
+    
+    return html.Div([
+        html.Div([
+            html.Span(f"{incidents:,}", style={'fontSize': '1.5rem', 'fontWeight': '700', 'color': HIGHLIGHT_COLOR}),
+            html.Span(" incidents", style={'fontSize': '0.85rem', 'color': '#666', 'marginLeft': '0.25rem'}),
+        ]),
+        html.Div([
+            html.Span(f"{total:,.0f}", style={'fontSize': '1.5rem', 'fontWeight': '700', 'color': '#c9553d'}),
+            html.Span(" dead/missing", style={'fontSize': '0.85rem', 'color': '#666', 'marginLeft': '0.25rem'}),
+        ]),
+    ])
+
+
+# =============================================================================
+# MAP CALLBACK - Improved with more detail, no legend, smaller points
+# =============================================================================
+@app.callback(Output('map-incidents', 'figure'), Input('store-filter-indices', 'data'))
+def update_map(indices):
+    if not indices:
+        return empty_figure('scatter_geo')
+    
+    df = MM.loc[indices].copy()
+    df = df[(df['Latitude'] != 0) & (df['Longitude'] != 0)]
+    df = df.dropna(subset=['Latitude', 'Longitude'])
+    
+    if df.empty:
+        return empty_figure('scatter_geo')
+    
+    # Very small points with log scale variance
+    df['marker_size'] = np.log1p(df['Total_Dead_and_Missing'])
+    df['marker_size'] = 6 + (df['marker_size'] / df['marker_size'].max()) * 20  
+    
+    fig = px.scatter_geo(
+        df,
+        lat='Latitude',
+        lon='Longitude',
+        size='marker_size',
+        color='Migration_Route',
+        hover_name='Migration_Route',
+        hover_data={
+            'Number_Dead': True,
+            'Minimum_Missing': True,
+            'Reported_Year': True,
+            'Country': False,
+            'marker_size': False,
+            'Latitude': False,
+            'Longitude': False,
+        },
+        custom_data=['URL1'],
+        projection='orthographic',
+        color_discrete_sequence=ROUTE_COLORS,
+        opacity=0.6,
+    )
+    
+    # Detailed, terrain-style base map
+    fig.update_geos(
+        showland=True,
+        landcolor='rgb(228, 223, 215)',           # Warm parchment tone
+        showocean=True,
+        oceancolor='rgb(185, 206, 220)',          # Muted ocean blue
+        showcoastlines=True,
+        coastlinecolor='rgb(120, 120, 120)',      # Darker coastlines
+        coastlinewidth=1,
+        showlakes=True,
+        lakecolor='rgb(185, 206, 220)',
+        showcountries=True,
+        countrycolor='rgb(160, 160, 160)',        # Visible country borders
+        countrywidth=0.8,
+        showsubunits=True,
+        subunitcolor='rgb(200, 200, 200)',
+        subunitwidth=0.8,
+        showrivers=True,
+        rivercolor='rgb(170, 195, 215)',
+        riverwidth=1,
+        showframe=False,
+        bgcolor='rgba(0,0,0,0)',
+        resolution=50,                             # Higher resolution (50 or 110)
+        lataxis_showgrid=True,
+        lataxis_gridcolor='rgba(0,0,0,0.05)',
+        lonaxis_showgrid=True,
+        lonaxis_gridcolor='rgba(0,0,0,0.05)',
+    )
+    
+    # Make markers smaller and remove legend
+    fig.update_traces(
+        marker=dict(
+            sizemode='area',
+            sizeref=1.0,        # Larger sizeref = smaller markers
+            sizemin=1,
+            line=dict(width=0.3, color='rgba(30,30,30,0.4)'),
+        )
+    )
+    
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=None,  # Let container control height
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False,  # REMOVED LEGEND
+    )
+    
+    return fig
+
+
+# =============================================================================
+# INCIDENT DETAILS - Fixed to not cause reload
+# =============================================================================
+@app.callback(Output('incident-details', 'children'), Input('map-incidents', 'clickData'))
+def display_incident_details(clickData):
     if clickData is None:
-        return ("Click on a bubble to get the associated news article")
-    else:
-        print(clickData["points"][0]["customdata"][0])
-        the_link = clickData['points'][0]['customdata'][0]
-        the_link = the_link.split(",")
-        if the_link is None:
-            return 'No Article Available'
-        else:
-            return html.A(the_link, href=the_link[0], target = "_blank")
-
-
-# In[13]:
-
-
-# D.3 Time series with dead and missing per month
-@app.callback(Output('fig3', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
+        return html.P(
+            "Click on a point to see the associated source",
+            style={'margin': '0', 'color': '#666', 'fontSize': '0.85rem'}
+        )
     
     try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-
-        MM_COD["Reported_Date"] = pd.to_datetime(MM_COD["Reported_Date"])
-        MM_date = MM_COD.set_index("Reported_Date")
-        MM_month = MM_date.resample("M").sum()
-
-
-        return px.bar(MM_month, y= ['Number_Dead', "Minimum_Missing"], height = 500, width = 750,
-                      color_discrete_sequence=px.colors.sequential.RdBu).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                                        "paper_bgcolor": "rgba(0, 0, 0, 0)"},
-                                                                                       xaxis_tickangle=-90, xaxis_title = "Date",
-                                                                                      yaxis_title="Number of Migrants",
-                                                                                       legend=dict(yanchor="top", y=0.99,
-                                                                                                   xanchor="right", x=0.99,
-                                                                                                  title = ""))
+        # Safely extract the URL
+        points = clickData.get('points', [])
+        if not points:
+            return html.P(
+                'No Article Available',
+                style={'margin': '0', 'color': '#b8860b', 'fontSize': '0.85rem'}
+            )
         
-    except:
-        return px.bar().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
-
-
-# In[14]:
-
-
-# D.4 Bar chart with deaths per year
-@app.callback(Output('fig2', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-
-        return px.bar(MM_COD.groupby(by="Reported_Year").sum(),
-                      y = ["Number_Dead", "Minimum_Missing"],
-                      height = 500, width = 750, 
-                      color_discrete_sequence=px.colors.sequential.RdBu).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                                        "paper_bgcolor": "rgba(0, 0, 0, 0)"},
-                                                                                        xaxis_tickangle=-90, xaxis_title = "Date",
-                                                                                        yaxis_title= "Number of Migrants",
-                                                                                        legend=dict(yanchor="top", y=0.99,
-                                                                                        xanchor="right", x=0.99,
-                                                                                        title =""))
-                                                                                        
-    except Exception:
-        return px.bar().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
-
-
-# In[15]:
-
-
-# D.5 Bar chart with number of incidents by COD
-@app.callback(Output('fig4', 'figure'), 
-             Input('Reported_Year', 'value'),
-             Input('Region', 'value'), 
-             Input('Country', 'value'),
-             Input('COD', 'value'), 
-             Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-   
-   try:
-       if Reported_Year != "All":
-           MM_Year = MM.query("Reported_Year == @Reported_Year")
-       else:
-           MM_Year = MM
-
-       if Region != "All":
-           MM_Region = MM_Year.query("Region == @Region")
-       else:
-           MM_Region = MM_Year
-           
-       if Country != "All":
-           MM_Country = MM_Region.query("Country == @Country")
-       else:
-           MM_Country = MM_Region
-           
-       if Migration_Route != "All":
-           MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-       else:
-           MM_Route = MM_Country
-
-       if COD != "All":
-           MM_COD = MM_Route.loc[MM_Route[COD]==1]
-       else:
-           MM_COD = MM_Route
-       
-       COD_df = MM_COD[['Other Accidents',
-      'Drowning', 'Lack of Shelter, Food, or Water',
-      'Mixed or unknown',
-      'Sickness',
-      'Transportation Accident']]
-       COD_df = COD_df.sum().to_frame().reset_index()
-       COD_df.columns = ["COD_category", "Incident_Count"] 
-       COD_df = COD_df.sort_values(by ="Incident_Count", ascending=True)    
-
-       return px.bar(COD_df,
-                     y="COD_category",
-                     x = "Incident_Count",
-                     height = 500,
-                     width = 750,
-                     orientation = "h",
-                     color="Incident_Count",
-                     color_continuous_scale='YlOrRd').update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                  "paper_bgcolor": "rgba(0, 0, 0, 0)"},
-                                                                  xaxis_tickangle=-90,
-                                                                  xaxis_title= "Cause of Death",
-                                                                  yaxis_title = "Number of Incidents")
-   
-   except:
-       return px.bar().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
-
-
-# In[16]:
-
-
-# D.6 Pie Chart: number of deaths per region
-@app.callback(Output('fig5', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-    
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-        return px.pie(MM_COD, values='Total_Dead_and_Missing', names='Region',
-                      height = 500, width = 750,
-                      color_discrete_sequence=px.colors.sequential.RdBu).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                                        "paper_bgcolor": "rgba(0, 0, 0, 0)"})
-    
-    
-    except:
+        customdata = points[0].get('customdata', [])
+        if not customdata:
+            return html.P(
+                'No Article Available',
+                style={'margin': '0', 'color': '#b8860b', 'fontSize': '0.85rem'}
+            )
         
-        return px.pie().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
-    
-
-
-# In[17]:
-
-
-# D.7 Treemap: number of deaths by country
-@app.callback(Output('fig6', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-    
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-        Country_df = MM_COD[["Country", 'Total_Dead_and_Missing']]
-        Country_df= Country_df.groupby(["Country"]).sum().reset_index()
-            
-        return px.treemap(Country_df,
-                 path=['Country'],
-                 values='Total_Dead_and_Missing',
-                 labels = ['Country', 'Total_Dead_and_Missing'],
-                 height=500,
-                 width =1500,
-                 color = "Total_Dead_and_Missing",
-                 color_continuous_scale='YlOrRd',
-                 color_continuous_midpoint = None)
-
-    except:
+        the_link = customdata[0] if len(customdata) > 0 else None
         
-        return px.treemap().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
-
-
-# In[18]:
-
-
-# D.8 Pie Chart: number of deaths by sex
-@app.callback(Output('fig7', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-    
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-        Sex_df = MM_COD[['Females', 'Males', 'Unknown_Sex']]
-        Sex_df = Sex_df.sum().to_frame().reset_index()
-        Sex_df.columns = ["Sex", "Total_Dead_and_Missing"]  
-
-            
-        return px.pie(Sex_df, 
-                      values='Total_Dead_and_Missing', 
-                      names='Sex',
-                      height = 500, 
-                      width = 750,
-                      hole = .4,
-                      color_discrete_sequence=px.colors.sequential.RdBu).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                                        "paper_bgcolor": "rgba(0, 0, 0, 0)"})
-    
-    
-    except:
+        # Check for None, empty string, NaN, 'nan', etc.
+        if the_link is None or the_link == '' or str(the_link).lower() == 'nan' or pd.isna(the_link):
+            return html.P(
+                'No Article Available',
+                style={'margin': '0', 'color': '#b8860b', 'fontSize': '0.85rem'}
+            )
         
-        return px.pie().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
+        # Valid link - return button
+        link_url = str(the_link).split(",")[0].strip()
+        return html.A(
+            "View Source",
+            href=link_url,
+            target="_blank",
+            style={
+                'display': 'inline-block',
+                'padding': '0.5rem 1.5rem',
+                'backgroundColor': HIGHLIGHT_COLOR,
+                'color': 'white',
+                'borderRadius': '4px',
+                'textDecoration': 'none',
+                'fontSize': '0.9rem',
+                'fontWeight': '500',
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error in display_incident_details: {e}")
+        return html.P(
+            'No Article Available',
+            style={'margin': '0', 'color': '#b8860b', 'fontSize': '0.85rem'}
+        )
 
 
-# In[19]:
+# =============================================================================
+# OTHER CHART CALLBACKS
+# =============================================================================
+
+@app.callback(Output('chart-by-year', 'figure'), Input('store-filter-indices', 'data'))
+def update_chart_by_year(indices):
+    if not indices:
+        return empty_figure('bar')
+    df = MM.loc[indices]
+    yearly = df.groupby('Reported_Year')[['Number_Dead', 'Minimum_Missing']].sum().reset_index()
+    fig = px.bar(yearly, x='Reported_Year', y=['Number_Dead', 'Minimum_Missing'],
+                 color_discrete_sequence=COLOR_SCHEME,
+                 labels={'value': 'Number of Migrants', 'Reported_Year': 'Year', 'variable': ''})
+    fig.update_layout(**CHART_LAYOUT, xaxis_tickangle=-45,
+                      legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
+    return fig
 
 
-# D.9 Pie Chart: number of deaths by age
-@app.callback(Output('fig8', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-    
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-        Age_df = MM_COD[["Confirmed_Adults", "Children", 'Unknown_Age_Status']]
-        Age_df = Age_df.sum().to_frame().reset_index()
-        Age_df.columns = ["Age_Status", "Total_Dead_and_Missing"]  
-
-        return px.pie(Age_df, 
-                      values='Total_Dead_and_Missing', 
-                      names='Age_Status',
-                      height = 500, 
-                      width = 750,
-                      hole = .4,
-                      color_discrete_sequence=px.colors.sequential.RdBu).update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)",
-                                                                                        "paper_bgcolor": "rgba(0, 0, 0, 0)"})
-    
-    
-    except:
-        
-        return px.pie().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
+@app.callback(Output('chart-by-month', 'figure'), Input('store-filter-indices', 'data'))
+def update_chart_by_month(indices):
+    if not indices:
+        return empty_figure('bar')
+    df = MM.loc[indices].copy()
+    df = df.dropna(subset=['Reported_Date'])
+    df = df.set_index('Reported_Date')
+    monthly = df.resample('ME')[['Number_Dead', 'Minimum_Missing']].sum()
+    fig = px.bar(monthly, y=['Number_Dead', 'Minimum_Missing'],
+                 color_discrete_sequence=COLOR_SCHEME,
+                 labels={'value': 'Number of Migrants', 'Reported_Date': 'Date', 'variable': ''})
+    fig.update_layout(**CHART_LAYOUT, xaxis_tickangle=-90,
+                      legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
+    return fig
 
 
-# In[20]:
+@app.callback(Output('chart-by-cod', 'figure'), Input('store-filter-indices', 'data'))
+def update_chart_by_cod(indices):
+    if not indices:
+        return empty_figure('bar')
+    df = MM.loc[indices]
+    cod_cols = [c for c in COD_COLUMNS if c in df.columns]
+    if not cod_cols:
+        return empty_figure('bar')
+    cod_sums = df[cod_cols].sum()
+    cod_df = pd.DataFrame({
+        'Cause': [COD_DISPLAY_NAMES.get(c, c) for c in cod_sums.index],
+        'Count': cod_sums.values
+    }).sort_values('Count', ascending=True)
+    fig = px.bar(cod_df, x='Count', y='Cause', orientation='h',
+                 color='Count', color_continuous_scale='YlOrRd',
+                 labels={'Count': 'Number of Incidents', 'Cause': ''})
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
 
 
-#D.10 Download csv file with selected data
+@app.callback(Output('chart-by-region', 'figure'), Input('store-filter-indices', 'data'))
+def update_chart_by_region(indices):
+    if not indices:
+        return empty_figure('pie')
+    df = MM.loc[indices]
+    fig = px.pie(df, values='Total_Dead_and_Missing', names='Region',
+                 color_discrete_sequence=COLOR_SCHEME, hole=0.3)
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
 
-@app.callback(Output("download_csv", 'data'), Input("btn", "n_clicks"),
-              Input("store-data", 'data'), prevent_initial_call=True)
+
+@app.callback(Output('chart-by-sex', 'figure'), Input('store-filter-indices', 'data'))
+def update_chart_by_sex(indices):
+    if not indices:
+        return empty_figure('pie')
+    df = MM.loc[indices]
+    sex_cols = [c for c in ['Females', 'Males', 'Unknown_Sex'] if c in df.columns]
+    sex_totals = df[sex_cols].sum()
+    sex_df = pd.DataFrame({'Sex': sex_totals.index, 'Count': sex_totals.values})
+    fig = px.pie(sex_df, values='Count', names='Sex', color_discrete_sequence=COLOR_SCHEME, hole=0.4)
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
 
 
-def callback(n_clicks, data):
-    MM_download = pd.DataFrame.from_dict(data)
-    
-    if n_clicks is None:
+@app.callback(Output('chart-by-age', 'figure'), Input('store-filter-indices', 'data'))
+def update_chart_by_age(indices):
+    if not indices:
+        return empty_figure('pie')
+    df = MM.loc[indices]
+    age_cols = [c for c in ['Confirmed_Adults', 'Children', 'Unknown_Age_Status'] if c in df.columns]
+    age_totals = df[age_cols].sum()
+    age_df = pd.DataFrame({'Age': age_totals.index, 'Count': age_totals.values})
+    fig = px.pie(age_df, values='Count', names='Age', color_discrete_sequence=COLOR_SCHEME, hole=0.4)
+    fig.update_layout(**CHART_LAYOUT)
+    return fig
+
+
+@app.callback(
+    Output('download-csv', 'data'),
+    Input('btn-download', 'n_clicks'),
+    State('store-filter-indices', 'data'),
+    prevent_initial_call=True
+)
+def download_csv(n_clicks, indices):
+    if n_clicks is None or not indices:
         raise PreventUpdate
-     
-    elif ctx.triggered_id == "btn":
-        return dict(content = MM_download.iloc[0:, 0:].to_csv(), filename = "Missing_Migrants.csv")
+    df = MM.loc[indices]
+    return dict(content=df.to_csv(index=False), filename="Missing_Migrants_Filtered.csv")
 
 
-# In[21]:
-
-
-# D.11 Seasonal Decomposition - Display Seasonal Data
-@app.callback(Output('fig9', 'figure'), 
-              Input('Reported_Year', 'value'),
-              Input('Region', 'value'), 
-              Input('Country', 'value'),
-              Input('COD', 'value'), 
-              Input('Migration_Route', 'value'))
-
-def callback(Reported_Year, Region, Country, COD, Migration_Route):
-    
-    try:
-        if Reported_Year != "All":
-            MM_Year = MM.query("Reported_Year == @Reported_Year")
-        else:
-            MM_Year = MM
-
-        if Region != "All":
-            MM_Region = MM_Year.query("Region == @Region")
-        else:
-            MM_Region = MM_Year
-            
-        if Country != "All":
-            MM_Country = MM_Region.query("Country == @Country")
-        else:
-            MM_Country = MM_Region
-            
-        if Migration_Route != "All":
-            MM_Route = MM_Country.query("Migration_Route == @Migration_Route")
-        else:
-            MM_Route = MM_Country
-
-        if COD != "All":
-            MM_COD = MM_Route.loc[MM_Route[COD]==1]
-        else:
-            MM_COD = MM_Route
-            
-        MM_COD["Reported_Date"] = pd.to_datetime(MM_COD["Reported_Date"])
-        MM_date = MM_COD.set_index("Reported_Date")
-        MM_month = MM_date.resample("M").sum()
-        MM_month.index.freq = "M"
-        result = seasonal_decompose(MM_month['Total_Dead_and_Missing'], model = 'add')
-        
-        return px.line(result.seasonal)
-    
-
-    except:
-        
-        return px.bar().update_layout({"plot_bgcolor":"rgba(0, 0, 0, 0)","paper_bgcolor": "rgba(0, 0, 0, 0)"})
-
-
-# In[22]:
-
-
-del app.config._read_only["requests_pathname_prefix"]
-
-
-# In[ ]:
-
-
-# E. run app in server
+# =============================================================================
+# RUN SERVER
+# =============================================================================
 if __name__ == '__main__':
   app.run_server()
-
 
